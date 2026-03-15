@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -136,6 +137,16 @@ func parseGoMod(path string) (string, string, error) {
 	return modName, goVer, nil
 }
 
+type moduleInfo struct {
+	Path    string      `json:"Path"`
+	Version string      `json:"Version"`
+	Update  *updateInfo `json:"Update,omitempty"`
+}
+
+type updateInfo struct {
+	Version string `json:"Version"`
+}
+
 type dependency struct {
 	Path    string
 	Current string
@@ -143,7 +154,7 @@ type dependency struct {
 }
 
 func findUpdates(dir string) ([]dependency, error) {
-	cmd := exec.Command("go", "list", "-m", "-u", "all")
+	cmd := exec.Command("go", "list", "-m", "-u", "-json", "all")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod")
 
@@ -162,33 +173,26 @@ func findUpdates(dir string) ([]dependency, error) {
 func parseGoListOutput(data []byte) ([]dependency, error) {
 	var deps []dependency
 
-	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	dec := json.NewDecoder(strings.NewReader(string(data)))
 	first := true
-	for sc.Scan() {
+	for dec.More() {
+		var mod moduleInfo
+		if err := dec.Decode(&mod); err != nil {
+			return nil, fmt.Errorf("parse json: %w", err)
+		}
+
 		if first {
 			first = false
 			continue
 		}
 
-		line := sc.Text()
-		if !strings.Contains(line, "[") {
-			continue
+		if mod.Update != nil {
+			deps = append(deps, dependency{
+				Path:    mod.Path,
+				Current: mod.Version,
+				Latest:  mod.Update.Version,
+			})
 		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-
-		deps = append(deps, dependency{
-			Path:    fields[0],
-			Current: fields[1],
-			Latest:  strings.Trim(fields[2], "[]"),
-		})
-	}
-
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("parse output: %w", err)
 	}
 
 	return deps, nil
