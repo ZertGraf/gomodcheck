@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,6 +40,10 @@ func run() error {
 	}
 	defer cleanup()
 
+	if _, err := os.Stat(dir + "/go.mod"); err != nil {
+		return fmt.Errorf("repository does not contain a go.mod file")
+	}
+
 	mod, err := readModuleInfo(dir)
 	if err != nil {
 		return err
@@ -73,7 +78,7 @@ func ensureDeps() error {
 	return nil
 }
 
-// execOutput runs an external command with context and returns stdout.
+// runs an external command with context and returns stdout.
 // centralizes timeout detection and stderr extraction.
 func execOutput(ctx context.Context, dir string, env []string, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -124,13 +129,33 @@ func cloneToTemp(repoURL string) (string, func(), error) {
 	return tmpDir, cleanup, nil
 }
 
+type goVersion struct {
+	Version string
+}
+
+func (v *goVersion) UnmarshalJSON(data []byte) error {
+	// go 1.25+ returns a plain string, older versions return an object
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		v.Version = s
+		return nil
+	}
+
+	var obj struct {
+		Version string `json:"Version"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	v.Version = obj.Version
+	return nil
+}
+
 type goModInfo struct {
 	Module struct {
 		Path string `json:"Path"`
 	} `json:"Module"`
-	Go struct {
-		Version string `json:"Version"`
-	} `json:"Go"`
+	Go goVersion `json:"Go"`
 }
 
 func readModuleInfo(dir string) (*goModInfo, error) {
@@ -186,7 +211,7 @@ func findUpdates(dir string) ([]dependency, error) {
 func parseGoListOutput(data []byte) ([]dependency, error) {
 	var deps []dependency
 
-	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec := json.NewDecoder(bytes.NewReader(data))
 	for dec.More() {
 		var mod moduleEntry
 		if err := dec.Decode(&mod); err != nil {
